@@ -1,0 +1,5 @@
+backtesting==0.6.5
+yfinance==0.2.66
+pandas>=2.2,<3
+numpy>=1.26,<2.3
+bokeh>=3.4
