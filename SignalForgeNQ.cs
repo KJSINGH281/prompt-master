@@ -122,6 +122,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 StopTargetHandling           = StopTargetHandling.PerEntryExecution;
                 IsInstantiatedOnEachOptimizationIteration = true;
 
+                // ── Diagnostics ────────────────────────────────────────────
+                EnableDebugPrints = true;   // Prints to NinjaScript Output window
+                ShowSessionBg     = true;   // Tints chart bg during kill-zones
+                ShowSignalDots    = true;   // Tiny dots even when no trade fires
+
                 // ── Signal Logic ───────────────────────────────────────────
                 RequireAllIndicators = true;
 
@@ -209,6 +214,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
             else if (State == State.DataLoaded)
             {
+                if (EnableDebugPrints)
+                    Print(string.Format(
+                        "[SignalForgeNQ] DataLoaded — instantiating indicators @ {0}",
+                        DateTime.Now));
                 // Instantiate indicator series once historical data is loaded
                 smaFastSeries = SMA(SmaFastLen);
                 smaSlowSeries = SMA(SmaSlowLen);
@@ -222,8 +231,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 emaFastSeries = EMA(EmaFastLen);
                 emaSlowSeries = EMA(EmaSlowLen);
 
-                // ParabolicSAR(acceleration, accelerationMax, accelerationStep)
-                sarSeries     = ParabolicSAR(SarStart, SarMax, SarInc);
+                // ParabolicSAR(acceleration, accelerationStep, accelerationMax)
+                // FIX: NT8 signature is (start, step, max) — original swapped step and max.
+                sarSeries     = ParabolicSAR(SarStart, SarInc, SarMax);
 
                 cciSeries     = CCI(CciLen);
                 adxSeries     = ADX(AdxLen);
@@ -242,6 +252,18 @@ namespace NinjaTrader.NinjaScript.Strategies
                 maxPeriod = Math.Max(maxPeriod, 34 + 5);   // AO buffer
                 maxPeriod = Math.Max(maxPeriod, AtrLen + 5);
                 BarsRequiredToTrade = maxPeriod + 10;
+            }
+            else if (State == State.Realtime && EnableDebugPrints)
+            {
+                Print(string.Format(
+                    "[SignalForgeNQ] Realtime ON @ {0}  Account={1}  Instrument={2}",
+                    DateTime.Now,
+                    Account != null ? Account.Name : "<none>",
+                    Instrument != null ? Instrument.FullName : "<none>"));
+            }
+            else if (State == State.Terminated && EnableDebugPrints)
+            {
+                Print("[SignalForgeNQ] Terminated.");
             }
         }
 
@@ -278,6 +300,25 @@ namespace NinjaTrader.NinjaScript.Strategies
             bool inAM      = EnableAmSession && timeNow >= 93000  && timeNow <= 113000;
             bool inPM      = EnablePmSession && timeNow >= 133000 && timeNow <= 153000;
             bool inSession = inAM || inPM;
+
+            // ── Visible session background (so you SEE it's running) ─────────
+            if (ShowSessionBg)
+            {
+                if      (inAM) BackBrush = new SolidColorBrush(Color.FromArgb(20,  0, 200, 100));
+                else if (inPM) BackBrush = new SolidColorBrush(Color.FromArgb(20, 80, 140, 255));
+                else           BackBrush = null;
+            }
+
+            // First-bar diagnostic dump to NinjaScript Output Window
+            if (EnableDebugPrints && CurrentBar == BarsRequiredToTrade)
+            {
+                Print(string.Format(
+                    "[SignalForgeNQ] First-eligible bar @ {0}  ATR={1:F2}  "
+                    + "Session(AM={2}/PM={3})  AnyEnabled={4}",
+                    Time[0], atr, inAM, inPM,
+                    EnableSma||EnableRsi||EnableMacd||EnableSt||EnableStoch||
+                    EnableBb||EnableEma||EnableAo||EnableSar||EnableCci||EnableAdx));
+            }
 
             // Supertrend must update every bar for band continuity
             CalcSupertrend(atr);
@@ -418,6 +459,32 @@ namespace NinjaTrader.NinjaScript.Strategies
                                shortCond = Combine(shortCond, adxBear,   RequireAllIndicators); anyEnabled = true; }
 
             if (!anyEnabled) { longCond = false; shortCond = false; }
+
+            // ── Visible condition dots (no trade required) ──────────────────
+            if (ShowSignalDots)
+            {
+                if (longCond)
+                    Draw.Dot(this, "BullDot_" + CurrentBar, true, 0,
+                             Low[0]  - TickSize * 6, Brushes.LimeGreen);
+                if (shortCond)
+                    Draw.Dot(this, "BearDot_" + CurrentBar, true, 0,
+                             High[0] + TickSize * 6, Brushes.OrangeRed);
+            }
+
+            // ── Diagnostic: log every condition transition ──────────────────
+            if (EnableDebugPrints)
+            {
+                if (longCond && !prevLongCond)
+                    Print(string.Format(
+                        "[SignalForgeNQ] {0}  LONG cond TRUE   inSession={1}  "
+                        + "halt={2}  pos={3}",
+                        Time[0], inSession, dailyHalt, Position.MarketPosition));
+                if (shortCond && !prevShortCond)
+                    Print(string.Format(
+                        "[SignalForgeNQ] {0}  SHORT cond TRUE  inSession={1}  "
+                        + "halt={2}  pos={3}",
+                        Time[0], inSession, dailyHalt, Position.MarketPosition));
+            }
 
             // ═════════════════════════════════════════════════════════════════
             // SECTION C — Edge detection (transition only)
@@ -694,6 +761,24 @@ namespace NinjaTrader.NinjaScript.Strategies
                  Description = "ON = AND (all must agree)   OFF = OR (any triggers)",
                  GroupName = "01 — Signal Logic", Order = 0)]
         public bool RequireAllIndicators { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Debug Prints",
+                 Description = "Logs state to NinjaScript Output window",
+                 GroupName = "01 — Signal Logic", Order = 1)]
+        public bool EnableDebugPrints { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Session Background",
+                 Description = "Tints chart bg green during AM, blue during PM",
+                 GroupName = "01 — Signal Logic", Order = 2)]
+        public bool ShowSessionBg { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Signal Dots",
+                 Description = "Lime/orange dots when bull/bear conditions resolve true",
+                 GroupName = "01 — Signal Logic", Order = 3)]
+        public bool ShowSignalDots { get; set; }
 
         // ── 02. ATR Risk Management ─────────────────────────────────────────
 
